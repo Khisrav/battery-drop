@@ -1,0 +1,8 @@
+{
+  "name": "Battery Drop Rate",
+  "description": "Shows battery discharge rate in % per hour in the top panel, with detailed battery information and estimated time remaining in the dropdown menu.",
+  "uuid": "battery-drop@khisrav",
+  "shell-version": [
+    "48"
+  ]
+}
