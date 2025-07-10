@@ -41,11 +41,13 @@ class BatteryDropIndicator extends PanelMenu.Button {
 
         // Battery monitoring variables
         this._batteryPercentage = 0;
-        this._lastPercentage = 0;
-        this._lastCheckTime = 0;
         this._dischargeRate = 0;
         this._batteryHistory = [];
         this._isCharging = false;
+        
+        // Average tracking since extension start
+        this._allRateReadings = [];
+        this._startTime = GLib.get_real_time() / 1000000;
 
         // Create popup menu items
         this._createMenu();
@@ -60,9 +62,13 @@ class BatteryDropIndicator extends PanelMenu.Button {
         this._batteryItem = new PopupMenu.PopupMenuItem('Battery: --%');
         this.menu.addMenuItem(this._batteryItem);
 
-        // Discharge rate
-        this._rateItem = new PopupMenu.PopupMenuItem('Discharge Rate: -- %/h');
+        // Current rate
+        this._rateItem = new PopupMenu.PopupMenuItem('Current Rate: -- %/h');
         this.menu.addMenuItem(this._rateItem);
+
+        // Average since boot
+        this._avgItem = new PopupMenu.PopupMenuItem('Avg Since Start: -- %/h');
+        this.menu.addMenuItem(this._avgItem);
 
         // Status (charging/discharging)
         this._statusItem = new PopupMenu.PopupMenuItem('Status: Unknown');
@@ -89,28 +95,57 @@ class BatteryDropIndicator extends PanelMenu.Button {
             }
 
             if (!batteryPath) {
-                return { percentage: 0, charging: false, found: false };
+                return { percentage: 0, charging: false, found: false, powerRate: 0 };
             }
 
             // Read capacity (percentage)
             let capacityFile = Gio.File.new_for_path(batteryPath + 'capacity');
             let [success, contents] = capacityFile.load_contents(null);
-            if (!success) return { percentage: 0, charging: false, found: false };
+            if (!success) return { percentage: 0, charging: false, found: false, powerRate: 0 };
             
             let percentage = parseInt(new TextDecoder().decode(contents).trim());
 
             // Read status (charging/discharging)
             let statusFile = Gio.File.new_for_path(batteryPath + 'status');
             [success, contents] = statusFile.load_contents(null);
-            if (!success) return { percentage, charging: false, found: true };
+            if (!success) return { percentage, charging: false, found: true, powerRate: 0 };
             
             let status = new TextDecoder().decode(contents).trim();
             let charging = status === 'Charging';
 
-            return { percentage, charging, found: true };
+            let powerRate = 0;
+            
+            // Calculate power rate (positive when charging, negative when discharging)
+            // Formula: (power_now_watts / energy_full_watt_hours) * 100 = % per hour
+            
+            // Read current power consumption/input (in microwatts)
+            let powerFile = Gio.File.new_for_path(batteryPath + 'power_now');
+            [success, contents] = powerFile.load_contents(null);
+            if (success) {
+                let powerMicrowatts = parseInt(new TextDecoder().decode(contents).trim());
+                let powerWatts = powerMicrowatts / 1000000; // Convert to watts
+                
+                // Read full available capacity (in microwatt-hours)
+                let energyFile = Gio.File.new_for_path(batteryPath + 'energy_full');
+                [success, contents] = energyFile.load_contents(null);
+                if (success) {
+                    let energyMicrowattHours = parseInt(new TextDecoder().decode(contents).trim());
+                    let energyWattHours = energyMicrowattHours / 1000000; // Convert to watt-hours
+                    
+                    if (energyWattHours > 0 && powerWatts > 0) {
+                        // Calculate percentage rate per hour
+                        let ratePerHour = (powerWatts / energyWattHours) * 100;
+                        
+                        // Make negative for discharging, positive for charging
+                        powerRate = charging ? ratePerHour : -ratePerHour;
+                    }
+                }
+            }
+
+            return { percentage, charging, found: true, powerRate };
         } catch (e) {
             console.error('Error reading battery info:', e);
-            return { percentage: 0, charging: false, found: false };
+            return { percentage: 0, charging: false, found: false, powerRate: 0 };
         }
     }
 
@@ -124,72 +159,77 @@ class BatteryDropIndicator extends PanelMenu.Button {
 
         this._batteryPercentage = batteryInfo.percentage;
         this._isCharging = batteryInfo.charging;
+        this._dischargeRate = batteryInfo.powerRate;
 
-        let currentTime = GLib.get_real_time() / 1000000; // Convert to seconds
-
-        // Calculate discharge rate if we have previous data
-        if (this._lastCheckTime > 0 && !this._isCharging) {
-            let timeDiff = currentTime - this._lastCheckTime;
-            let percentageDiff = this._lastPercentage - this._batteryPercentage;
+        // Store in history for averaging (smooth out fluctuations)
+        if (this._dischargeRate !== 0) {
+            this._batteryHistory.push(this._dischargeRate);
+            this._allRateReadings.push(this._dischargeRate);
             
-            if (timeDiff > 0 && percentageDiff >= 0) {
-                // Calculate rate in %/hour
-                let ratePerSecond = percentageDiff / timeDiff;
-                let ratePerHour = ratePerSecond * 3600;
-                
-                // Store in history for averaging
-                this._batteryHistory.push(ratePerHour);
-                
-                // Keep only last 10 readings for smoothing
-                if (this._batteryHistory.length > 10) {
-                    this._batteryHistory.shift();
-                }
-                
-                // Calculate average discharge rate
-                let sum = this._batteryHistory.reduce((a, b) => a + b, 0);
-                this._dischargeRate = sum / this._batteryHistory.length;
+            // Keep only last 5 readings for smoothing current rate
+            if (this._batteryHistory.length > 5) {
+                this._batteryHistory.shift();
             }
+            
+            // Calculate average current rate
+            let sum = this._batteryHistory.reduce((a, b) => a + b, 0);
+            this._dischargeRate = sum / this._batteryHistory.length;
         }
 
-        // Update panel text
-        if (this._isCharging) {
-            this._label.set_text('CHG');
-        } else if (this._dischargeRate > 0) {
-            this._label.set_text(`${this._dischargeRate.toFixed(1)}%/h`);
-        } else {
+        // Update panel text with average rate
+        if (this._allRateReadings.length === 0) {
             this._label.set_text('---%/h');
+        } else {
+            let avgSum = this._allRateReadings.reduce((a, b) => a + b, 0);
+            let avgRate = avgSum / this._allRateReadings.length;
+            let sign = avgRate >= 0 ? '+' : '';
+            this._label.set_text(`${sign}${avgRate.toFixed(1)}%/h`);
         }
 
         // Update menu items
         this._batteryItem.label.set_text(`Battery: ${this._batteryPercentage}%`);
         
-        if (this._isCharging) {
-            this._rateItem.label.set_text('Discharge Rate: Charging');
-            this._statusItem.label.set_text('Status: Charging');
-            this._timeItem.label.set_text('Est. Time: Charging');
+        // Current rate
+        if (this._dischargeRate === 0) {
+            this._rateItem.label.set_text('Current Rate: --');
         } else {
-            this._rateItem.label.set_text(`Discharge Rate: ${this._dischargeRate.toFixed(2)} %/h`);
-            this._statusItem.label.set_text('Status: Discharging');
-            
-            // Calculate estimated time remaining
-            if (this._dischargeRate > 0) {
-                let hoursRemaining = this._batteryPercentage / this._dischargeRate;
-                let hours = Math.floor(hoursRemaining);
-                let minutes = Math.floor((hoursRemaining - hours) * 60);
-                this._timeItem.label.set_text(`Est. Time: ${hours}h ${minutes}m`);
-            } else {
-                this._timeItem.label.set_text('Est. Time: Calculating...');
-            }
+            let sign = this._dischargeRate >= 0 ? '+' : '';
+            this._rateItem.label.set_text(`Current Rate: ${sign}${this._dischargeRate.toFixed(2)} %/h`);
         }
-
-        // Store current values for next calculation
-        this._lastPercentage = this._batteryPercentage;
-        this._lastCheckTime = currentTime;
+        
+        // Average since start
+        if (this._allRateReadings.length > 0) {
+            let avgSum = this._allRateReadings.reduce((a, b) => a + b, 0);
+            let avgRate = avgSum / this._allRateReadings.length;
+            let avgSign = avgRate >= 0 ? '+' : '';
+            let uptimeHours = ((GLib.get_real_time() / 1000000) - this._startTime) / 3600;
+            this._avgItem.label.set_text(`Avg Since Start: ${avgSign}${avgRate.toFixed(2)} %/h (${uptimeHours.toFixed(1)}h)`);
+        } else {
+            this._avgItem.label.set_text('Avg Since Start: Calculating...');
+        }
+        
+        // Status
+        this._statusItem.label.set_text(`Status: ${this._isCharging ? 'Charging' : 'Discharging'}`);
+        
+        // Time estimation
+        if (this._isCharging && this._dischargeRate > 0) {
+            let hoursToFull = (100 - this._batteryPercentage) / this._dischargeRate;
+            let hours = Math.floor(hoursToFull);
+            let minutes = Math.floor((hoursToFull - hours) * 60);
+            this._timeItem.label.set_text(`Est. Time to Full: ${hours}h ${minutes}m`);
+        } else if (!this._isCharging && this._dischargeRate < 0) {
+            let hoursRemaining = this._batteryPercentage / Math.abs(this._dischargeRate);
+            let hours = Math.floor(hoursRemaining);
+            let minutes = Math.floor((hoursRemaining - hours) * 60);
+            this._timeItem.label.set_text(`Est. Time Remaining: ${hours}h ${minutes}m`);
+        } else {
+            this._timeItem.label.set_text('Est. Time: Calculating...');
+        }
     }
 
     _startMonitoring() {
-        // Update every 30 seconds
-        this._timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 30, () => {
+        // Update every 10 seconds for more responsive readings
+        this._timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {
             this._updateBatteryInfo();
             return GLib.SOURCE_CONTINUE;
         });

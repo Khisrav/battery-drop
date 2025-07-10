@@ -1,7 +1,8 @@
 {
   "name": "Battery Drop Rate",
-  "description": "Shows battery discharge rate in % per hour in the top panel, with detailed battery information and estimated time remaining in the dropdown menu.",
+  "description": "Shows battery charge/discharge rate in % per hour with positive values for charging, negative for discharging. Displays running average since start on panel and detailed current/average rates in dropdown menu.",
   "uuid": "battery-drop@khisrav",
+  "version": 2,
   "shell-version": [
     "48"
   ],
