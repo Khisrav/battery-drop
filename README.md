@@ -51,7 +51,7 @@ The extension monitors your battery using precise power measurements:
    ```
 
 ### Method 2: Using GNOME Extensions Website
-*(If/when published to extensions.gnome.org)*
+https://extensions.gnome.org/extension/8329/battery-drop-rate/
 
 ## Usage
 
@@ -116,7 +116,7 @@ The extension automatically detects your battery by checking for:
 battery-drop@khisrav/
 ├── extension.js      # Main extension code
 ├── metadata.json     # Extension metadata
-└── README.md        # This file
+└── README.md         # This file
 ```
 
 ### Key Components
